@@ -3,103 +3,63 @@ import numpy as np
 import time
 
 
-def yolo_person_tracking():
-    # 初始化摄像头（降低分辨率提高性能）
+def lightweight_person_motion_tracking():
     cap = cv2.VideoCapture(0)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 240)
+    cap.set(3, 320)
+    cap.set(4, 240)
 
-    # 加载YOLOv4-tiny模型
-    net = cv2.dnn.readNet(
-        "yolo_files/yolov4-tiny.weights",
-        "yolo_files/yolov4-tiny.cfg"
-    )
+    # 背景建模器（MOG2比帧差更稳）
+    bg_subtractor = cv2.createBackgroundSubtractorMOG2(history=100, varThreshold=40, detectShadows=False)
 
-    # 使用OpenCV作为后端，CPU作为目标
-    net.setPreferableBackend(cv2.dnn.DNN_BACKEND_OPENCV)
-    net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
-
-    # 获取输出层名称
-    layer_names = net.getLayerNames()
-    output_layers = [layer_names[i[0] - 1] for i in net.getUnconnectedOutLayers()]
-
-    # 加载COCO类别标签
-    with open("yolo_files/coco.names", "r") as f:
-        classes = [line.strip() for line in f.readlines()]
-
-    # 用于控制检测频率
-    detection_interval = 5  # 每5帧检测一次
-    frame_count = 0
-    person_count = 0
     fps = 0
-    last_detection_time = time.time()
+    person_count = 0
+    last_time = time.time()
 
-    try:
-        while True:
-            start_time = time.time()
-            ret, frame = cap.read()
-            if not ret:
-                break
+    print("轻量级人形检测已启动（按 Q 退出）")
 
-            frame_count += 1
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
 
-            # 只在特定间隔进行检测
-            if frame_count % detection_interval == 0:
-                # 预处理图像
-                blob = cv2.dnn.blobFromImage(
-                    frame, 0.00392, (320, 320), (0, 0, 0),
-                    swapRB=True, crop=False
-                )
-                net.setInput(blob)
-                outs = net.forward(output_layers)
+        # 缩小尺寸以提速
+        frame_small = cv2.resize(frame, (160, 120))
+        gray = cv2.cvtColor(frame_small, cv2.COLOR_BGR2GRAY)
+        mask = bg_subtractor.apply(gray)
 
-                # 解析检测结果
-                person_count = 0
-                for out in outs:
-                    for detection in out:
-                        scores = detection[5:]
-                        class_id = np.argmax(scores)
-                        confidence = scores[class_id]
+        # 形态学处理消除噪声
+        mask = cv2.erode(mask, None, iterations=2)
+        mask = cv2.dilate(mask, None, iterations=4)
 
-                        # 只处理"person"类别且置信度>50%
-                        if confidence > 0.5 and classes[class_id] == 'person':
-                            person_count += 1
+        # 查找移动目标轮廓
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        person_count = 0
+        for cnt in contours:
+            if cv2.contourArea(cnt) < 500:  # 忽略小噪点
+                continue
+            x, y, w, h = cv2.boundingRect(cnt)
+            person_count += 1
+            cv2.rectangle(frame_small, (x, y), (x + w, y + h), (0, 255, 0), 2)
 
-                            # 计算边界框坐标
-                            center_x = int(detection[0] * frame.shape[1])
-                            center_y = int(detection[1] * frame.shape[0])
-                            w = int(detection[2] * frame.shape[1])
-                            h = int(detection[3] * frame.shape[0])
+        # 计算FPS
+        now = time.time()
+        fps = 1 / (now - last_time)
+        last_time = now
 
-                            # 计算矩形框的左上角坐标
-                            x = int(center_x - w / 2)
-                            y = int(center_y - h / 2)
+        # 显示结果
+        cv2.putText(frame_small, f"Persons: {person_count}", (10, 20),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
+        cv2.putText(frame_small, f"FPS: {fps:.1f}", (10, 40),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
 
-                            # 绘制边界框和置信度
-                            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
-                            label = f"Person: {confidence:.2f}"
-                            cv2.putText(frame, label, (x, y - 10),
-                                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+        cv2.imshow("Motion Detection (CM0 Optimized)", frame_small)
 
-            # 计算FPS
-            end_time = time.time()
-            fps = 1 / (end_time - start_time)
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
 
-            # 显示统计信息
-            cv2.putText(frame, f"Persons: {person_count}", (10, 30),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-            cv2.putText(frame, f"FPS: {fps:.1f}", (10, 60),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-
-            cv2.imshow('YOLOv4-tiny Person Tracking', frame)
-
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                break
-
-    finally:
-        cap.release()
-        cv2.destroyAllWindows()
+    cap.release()
+    cv2.destroyAllWindows()
 
 
 if __name__ == "__main__":
-    yolo_person_tracking()
+    lightweight_person_motion_tracking()
